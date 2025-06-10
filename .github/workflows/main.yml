@@ -1,16 +1,18 @@
-name: Build RocketMQ Dashboard
+name: Build and Release RocketMQ Dashboard
 
 on:
+  workflow_dispatch:        # 手动触发
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    tags:
+      - 'v*.*.*'           # 推送 tag 自动触发，比如 v1.0.0
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Set up JDK
         uses: actions/setup-java@v3
@@ -21,8 +23,27 @@ jobs:
       - name: Build with Maven
         run: mvn clean package -DskipTests
 
-      - name: Upload artifact
+      - name: Upload JAR as artifact (optional)
         uses: actions/upload-artifact@v4
         with:
           name: rocketmq-dashboard-jar
           path: target/*.jar
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload JAR to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: target/*.jar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
