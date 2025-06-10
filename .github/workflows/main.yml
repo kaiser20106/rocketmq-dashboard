@@ -3,7 +3,8 @@ name: Build, Tag and Release RocketMQ Dashboard
 on:
   push:
     branches:
-      - main  # 或你想监听的分支
+      - main
+  workflow_dispatch:   # 增加手动触发支持
 
 jobs:
   build-tag-release:
@@ -12,7 +13,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # 方便打 tag
+          fetch-depth: 0
 
       - name: Generate tag name
         id: tag
