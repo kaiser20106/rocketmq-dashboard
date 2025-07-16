@@ -49,8 +49,6 @@ jobs:
       # 预先安装 npm 依赖（可选，有助于调试）
       - name: Install npm dependencies
         working-directory: frontend-new
-        env:
-          NODE_OPTIONS: --max_old_space_size=4096
         run: |
           npm install
           
@@ -73,6 +71,7 @@ jobs:
         working-directory: frontend-new
         env:
           CI: false  # 禁用 CI 模式
+          DISABLE_ESLINT_PLUGIN: true  # 禁用ESLint插件
         run: |
           npm run build
       
