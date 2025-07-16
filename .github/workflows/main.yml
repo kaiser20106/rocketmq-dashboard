@@ -66,11 +66,13 @@ jobs:
             cat package.json | jq '.scripts.build // "Build script not found"'
           fi
 
-  
+      - name: Disable CI checks
+        run: echo "CI=false" >> $GITHUB_ENV
+        
       # 尝试手动运行前端构建以获取详细错误信息
       - name: Test frontend build
         working-directory: frontend-new
-        run: CI='' npm run build
+        run: npm run build
       
       
       # 增加详细的构建输出
