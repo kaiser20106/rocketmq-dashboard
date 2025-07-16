@@ -65,13 +65,19 @@ jobs:
             echo "Build script in package.json:"
             cat package.json | jq '.scripts.build // "Build script not found"'
           fi
-          
+
+
+      - name: Fix ESLint errors
+        working-directory: frontend-new
+        run: |
+          npx eslint --fix src/    
+            
       # 尝试手动运行前端构建以获取详细错误信息
       - name: Test frontend build
         working-directory: frontend-new
         env:
           CI: false  # 禁用 CI 模式
-          DISABLE_ESLINT_PLUGIN: true  # 禁用ESLint插件
+         
         run: |
           npm run build
       
