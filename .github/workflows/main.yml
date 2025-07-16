@@ -37,49 +37,39 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # 添加 Node.js 支持
+    
+      # 设置 Node.js，指定正确的工作目录
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '18.2.0'
           cache: 'npm'
-          
-      # 手动处理前端构建
-      - name: Manual frontend build
+          cache-dependency-path: 'frontend-new/package-lock.json'
+      
+      # 预先安装 npm 依赖（可选，有助于调试）
+      - name: Install npm dependencies
+        working-directory: frontend-new
         run: |
-          # 查找包含 package.json 的目录
-          PACKAGE_JSON_FILES=$(find . -name "package.json" -type f)
+          npm install
           
-          if [ -z "$PACKAGE_JSON_FILES" ]; then
-            echo "No package.json found, this might be a pure Java project"
-            exit 0
+      # 检查前端构建环境
+      - name: Check frontend build environment
+        working-directory: frontend-new
+        run: |
+          echo "Node.js version: $(node --version)"
+          echo "npm version: $(npm --version)"
+          echo "Current directory: $(pwd)"
+          echo "Package.json exists: $(test -f package.json && echo 'Yes' || echo 'No')"
+          if [ -f package.json ]; then
+            echo "Build script in package.json:"
+            cat package.json | jq '.scripts.build // "Build script not found"'
           fi
           
-          for package_file in $PACKAGE_JSON_FILES; do
-            PACKAGE_DIR=$(dirname "$package_file")
-            echo "=== Processing package.json in $PACKAGE_DIR ==="
-            
-            cd "$PACKAGE_DIR"
-            
-            echo "=== Package.json content ==="
-            cat package.json
-            
-            echo "=== Installing dependencies ==="
-            npm install
-            
-            echo "=== Available npm scripts ==="
-            npm run || true
-            
-            echo "=== Running build if available ==="
-            if npm run build 2>/dev/null; then
-              echo "Build successful in $PACKAGE_DIR"
-            else
-              echo "Build failed or not available in $PACKAGE_DIR"
-            fi
-            
-            cd - > /dev/null
-          done
-      
+      # 尝试手动运行前端构建以获取详细错误信息
+      - name: Test frontend build
+        working-directory: frontend-new
+        run: |
+          npm run build
       
       
       # 增加详细的构建输出
