@@ -25,10 +25,10 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.acl.common.AclClientRPCHook;
 import org.apache.rocketmq.acl.common.SessionCredentials;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
+import org.apache.rocketmq.client.producer.LocalTransactionState;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.client.producer.TransactionListener;
 import org.apache.rocketmq.client.producer.TransactionMQProducer;
-import org.apache.rocketmq.client.producer.LocalTransactionState;
 import org.apache.rocketmq.client.trace.TraceContext;
 import org.apache.rocketmq.client.trace.TraceDispatcher;
 import org.apache.rocketmq.common.MixAll;
@@ -45,7 +45,6 @@ import org.apache.rocketmq.dashboard.model.request.TopicTypeMeta;
 import org.apache.rocketmq.dashboard.service.AbstractCommonService;
 import org.apache.rocketmq.dashboard.service.ClusterInfoService;
 import org.apache.rocketmq.dashboard.service.TopicService;
-import org.apache.rocketmq.dashboard.service.client.MQAdminExtImpl;
 import org.apache.rocketmq.dashboard.support.GlobalExceptionHandler;
 import org.apache.rocketmq.remoting.RPCHook;
 import org.apache.rocketmq.remoting.protocol.admin.TopicStatsTable;
@@ -71,7 +70,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -85,13 +83,12 @@ public class TopicServiceImpl extends AbstractCommonService implements TopicServ
     @Autowired
     private ClusterInfoService clusterInfoService;
 
-    private final ConcurrentMap<String, TopicRouteData> routeCache = new ConcurrentHashMap<>();
-    private final Object cacheLock = new Object();
+    private transient DefaultMQProducer systemTopicProducer;
+
+    private final Object producerLock = new Object();
 
     @Autowired
     private RMQConfigure configure;
-
-    private final ConcurrentMap<String, TopicConfig> topicConfigCache = new ConcurrentHashMap<>();
 
     @Override
     public TopicList fetchAllTopicList(boolean skipSysProcess, boolean skipRetryAndDlq) {
@@ -130,7 +127,7 @@ public class TopicServiceImpl extends AbstractCommonService implements TopicServ
             try {
                 TopicConfigSerializeWrapper topicConfigSerializeWrapper = mqAdminExt.getAllTopicConfig(brokerAddr.getBrokerAddrs().get(0L), 10000L);
                 for (TopicConfig topicConfig : topicConfigSerializeWrapper.getTopicConfigTable().values()) {
-                    TopicTypeMeta topicType = classifyTopicType(topicConfig.getTopicName(), topicConfigSerializeWrapper.getTopicConfigTable().get(topicConfig.getTopicName()).getAttributes(),sysTopics.getTopicList());
+                    TopicTypeMeta topicType = classifyTopicType(topicConfig.getTopicName(), topicConfigSerializeWrapper.getTopicConfigTable().get(topicConfig.getTopicName()).getAttributes(), sysTopics.getTopicList());
                     if (names.contains(topicType.getTopicName())) {
                         continue;
                     }
@@ -152,7 +149,7 @@ public class TopicServiceImpl extends AbstractCommonService implements TopicServ
         return new TopicTypeList(names, messageTypes);
     }
 
-    private TopicTypeMeta classifyTopicType(String topicName, Map<String,String> attributes, Set<String> sysTopics) {
+    private TopicTypeMeta classifyTopicType(String topicName, Map<String, String> attributes, Set<String> sysTopics) {
         TopicTypeMeta topicType = new TopicTypeMeta();
         topicType.setTopicName(topicName);
 
@@ -193,24 +190,11 @@ public class TopicServiceImpl extends AbstractCommonService implements TopicServ
 
     @Override
     public TopicRouteData route(String topic) {
-        TopicRouteData cachedData = routeCache.get(topic);
-        if (cachedData != null) {
-            return cachedData;
-        }
-
-        synchronized (cacheLock) {
-            cachedData = routeCache.get(topic);
-            if (cachedData != null) {
-                return cachedData;
-            }
-            try {
-                TopicRouteData freshData = mqAdminExt.examineTopicRouteInfo(topic);
-                routeCache.put(topic, freshData);
-                return freshData;
-            } catch (Exception ex) {
-                Throwables.throwIfUnchecked(ex);
-                throw new RuntimeException(ex);
-            }
+        try {
+            return mqAdminExt.examineTopicRouteInfo(topic);
+        } catch (Exception ex) {
+            Throwables.throwIfUnchecked(ex);
+            throw new RuntimeException(ex);
         }
     }
 
@@ -226,7 +210,6 @@ public class TopicServiceImpl extends AbstractCommonService implements TopicServ
 
     @Override
     public void createOrUpdate(TopicConfigInfo topicCreateOrUpdateRequest) {
-        MQAdminExtImpl.clearTopicConfigCache();
         TopicConfig topicConfig = new TopicConfig();
         BeanUtils.copyProperties(topicCreateOrUpdateRequest, topicConfig);
         String messageType = topicCreateOrUpdateRequest.getMessageType();
@@ -357,18 +340,40 @@ public class TopicServiceImpl extends AbstractCommonService implements TopicServ
         if (isEnableAcl) {
             rpcHook = new AclClientRPCHook(new SessionCredentials(configure.getAccessKey(), configure.getSecretKey()));
         }
-        DefaultMQProducer producer = buildDefaultMQProducer(MixAll.SELF_TEST_PRODUCER_GROUP, rpcHook);
-        producer.setInstanceName(String.valueOf(System.currentTimeMillis()));
-        producer.setNamesrvAddr(configure.getNamesrvAddr());
+
+        // ensures thread safety
+        if (systemTopicProducer == null) {
+            synchronized (producerLock) {
+                if (systemTopicProducer == null) {
+                    systemTopicProducer = buildDefaultMQProducer(MixAll.SELF_TEST_PRODUCER_GROUP, rpcHook);
+                    systemTopicProducer.setInstanceName("SystemTopicProducer-" + System.currentTimeMillis());
+                    systemTopicProducer.setNamesrvAddr(configure.getNamesrvAddr());
+                    try {
+                        systemTopicProducer.start();
+                    } catch (Exception e) {
+                        systemTopicProducer = null;
+                        Throwables.throwIfUnchecked(e);
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+        }
 
         try {
-            producer.start();
-            return producer.getDefaultMQProducerImpl().getmQClientFactory().getMQClientAPIImpl().getSystemTopicList(20000L);
+            return systemTopicProducer.getDefaultMQProducerImpl()
+                    .getmQClientFactory()
+                    .getMQClientAPIImpl()
+                    .getSystemTopicList(20000L);
         } catch (Exception e) {
+            // If the call fails, close and clean up the producer, and it will be re-created next time.
+            synchronized (producerLock) {
+                if (systemTopicProducer != null) {
+                    systemTopicProducer.shutdown();
+                    systemTopicProducer = null;
+                }
+            }
             Throwables.throwIfUnchecked(e);
             throw new RuntimeException(e);
-        } finally {
-            producer.shutdown();
         }
     }
 
@@ -431,13 +436,6 @@ public class TopicServiceImpl extends AbstractCommonService implements TopicServ
 
     }
 
-    @Override
-    public boolean refreshTopicList() {
-        routeCache.clear();
-        clusterInfoService.refresh();
-        MQAdminExtImpl.clearTopicConfigCache();
-        return true;
-    }
 
     private void waitSendTraceFinish(DefaultMQProducer producer, boolean traceEnabled) {
         if (!traceEnabled) {

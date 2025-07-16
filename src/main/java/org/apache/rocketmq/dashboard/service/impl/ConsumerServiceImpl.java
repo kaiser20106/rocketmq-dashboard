@@ -23,7 +23,43 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-
+import jakarta.annotation.Resource;
+import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.rocketmq.client.exception.MQClientException;
+import org.apache.rocketmq.common.MQVersion;
+import org.apache.rocketmq.common.MixAll;
+import org.apache.rocketmq.common.message.MessageQueue;
+import org.apache.rocketmq.common.utils.ThreadUtils;
+import org.apache.rocketmq.dashboard.config.RMQConfigure;
+import org.apache.rocketmq.dashboard.model.ConsumerGroupRollBackStat;
+import org.apache.rocketmq.dashboard.model.GroupConsumeInfo;
+import org.apache.rocketmq.dashboard.model.QueueStatInfo;
+import org.apache.rocketmq.dashboard.model.TopicConsumerInfo;
+import org.apache.rocketmq.dashboard.model.request.ConsumerConfigInfo;
+import org.apache.rocketmq.dashboard.model.request.DeleteSubGroupRequest;
+import org.apache.rocketmq.dashboard.model.request.ResetOffsetRequest;
+import org.apache.rocketmq.dashboard.service.AbstractCommonService;
+import org.apache.rocketmq.dashboard.service.ClusterInfoService;
+import org.apache.rocketmq.dashboard.service.ConsumerService;
+import org.apache.rocketmq.dashboard.service.client.ProxyAdmin;
+import org.apache.rocketmq.remoting.protocol.ResponseCode;
+import org.apache.rocketmq.remoting.protocol.admin.ConsumeStats;
+import org.apache.rocketmq.remoting.protocol.admin.RollbackStats;
+import org.apache.rocketmq.remoting.protocol.body.ClusterInfo;
+import org.apache.rocketmq.remoting.protocol.body.Connection;
+import org.apache.rocketmq.remoting.protocol.body.ConsumerConnection;
+import org.apache.rocketmq.remoting.protocol.body.ConsumerRunningInfo;
+import org.apache.rocketmq.remoting.protocol.body.GroupList;
+import org.apache.rocketmq.remoting.protocol.body.SubscriptionGroupWrapper;
+import org.apache.rocketmq.remoting.protocol.route.BrokerData;
+import org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,44 +80,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
-import javax.annotation.Resource;
-
-import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.lang3.StringUtils;
-import org.apache.rocketmq.client.exception.MQClientException;
-import org.apache.rocketmq.common.MQVersion;
-import org.apache.rocketmq.common.MixAll;
-import org.apache.rocketmq.dashboard.model.request.ConsumerConfigInfo;
-import org.apache.rocketmq.dashboard.model.request.DeleteSubGroupRequest;
-import org.apache.rocketmq.dashboard.model.request.ResetOffsetRequest;
-import org.apache.rocketmq.dashboard.service.ClusterInfoService;
-import org.apache.rocketmq.dashboard.service.client.ProxyAdmin;
-import org.apache.rocketmq.remoting.protocol.admin.ConsumeStats;
-import org.apache.rocketmq.remoting.protocol.admin.RollbackStats;
-import org.apache.rocketmq.common.message.MessageQueue;
-import org.apache.rocketmq.remoting.protocol.ResponseCode;
-import org.apache.rocketmq.remoting.protocol.body.ClusterInfo;
-import org.apache.rocketmq.remoting.protocol.body.Connection;
-import org.apache.rocketmq.remoting.protocol.body.ConsumerConnection;
-import org.apache.rocketmq.remoting.protocol.body.ConsumerRunningInfo;
-import org.apache.rocketmq.remoting.protocol.body.GroupList;
-import org.apache.rocketmq.remoting.protocol.body.SubscriptionGroupWrapper;
-import org.apache.rocketmq.remoting.protocol.route.BrokerData;
-import org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfig;
-import org.apache.rocketmq.common.utils.ThreadUtils;
-import org.apache.rocketmq.dashboard.config.RMQConfigure;
-import org.apache.rocketmq.dashboard.model.ConsumerGroupRollBackStat;
-import org.apache.rocketmq.dashboard.model.GroupConsumeInfo;
-import org.apache.rocketmq.dashboard.model.QueueStatInfo;
-import org.apache.rocketmq.dashboard.model.TopicConsumerInfo;
-import org.apache.rocketmq.dashboard.service.AbstractCommonService;
-import org.apache.rocketmq.dashboard.service.ConsumerService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.DisposableBean;
-import org.springframework.beans.factory.InitializingBean;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
 
 @Service
 public class ConsumerServiceImpl extends AbstractCommonService implements ConsumerService, InitializingBean, DisposableBean {
@@ -102,6 +100,8 @@ public class ConsumerServiceImpl extends AbstractCommonService implements Consum
     private ExecutorService executorService;
 
     private final List<GroupConsumeInfo> cacheConsumeInfoList = Collections.synchronizedList(new ArrayList<>());
+
+    private final HashMap<String, List<String>> consumerGroupMap = Maps.newHashMap();
 
     @Override
     public void afterPropertiesSet() {
@@ -174,12 +174,11 @@ public class ConsumerServiceImpl extends AbstractCommonService implements Consum
 
 
     public void makeGroupListCache() {
-        HashMap<String, List<String>> consumerGroupMap = Maps.newHashMap();
         SubscriptionGroupWrapper subscriptionGroupWrapper = null;
         try {
             ClusterInfo clusterInfo = clusterInfoService.get();
             for (BrokerData brokerData : clusterInfo.getBrokerAddrTable().values()) {
-                subscriptionGroupWrapper = mqAdminExt.getAllSubscriptionGroup(brokerData.selectBrokerAddr(), 3000L);
+                subscriptionGroupWrapper = mqAdminExt.getAllSubscriptionGroup(brokerData.selectBrokerAddr(), 30000L);
                 for (String groupName : subscriptionGroupWrapper.getSubscriptionGroupTable().keySet()) {
                     if (!consumerGroupMap.containsKey(groupName)) {
                         consumerGroupMap.putIfAbsent(groupName, new ArrayList<>());
@@ -211,9 +210,16 @@ public class ConsumerServiceImpl extends AbstractCommonService implements Consum
                     if (SYSTEM_GROUP_SET.contains(consumerGroup)) {
                         consumeInfo.setSubGroupType("SYSTEM");
                     } else {
-                        consumeInfo.setSubGroupType(subscriptionGroupTable.get(consumerGroup).isConsumeMessageOrderly() ? "FIFO" : "NORMAL");
+                        try {
+                            consumeInfo.setSubGroupType(subscriptionGroupTable.get(consumerGroup).isConsumeMessageOrderly() ? "FIFO" : "NORMAL");
+                        } catch (NullPointerException e) {
+                            logger.warn("SubscriptionGroupConfig not found for consumer group: {}", consumerGroup);
+                            boolean isFifoType = examineSubscriptionGroupConfig(consumerGroup)
+                                    .stream().map(ConsumerConfigInfo::getSubscriptionGroupConfig)
+                                    .allMatch(SubscriptionGroupConfig::isConsumeMessageOrderly);
+                            consumeInfo.setSubGroupType(isFifoType ? "FIFO" : "NORMAL");
+                        }
                     }
-                    consumeInfo.setGroup(consumerGroup);
                     consumeInfo.setUpdateTime(new Date());
                     groupConsumeInfoList.add(consumeInfo);
                 } catch (Exception e) {
@@ -271,22 +277,30 @@ public class ConsumerServiceImpl extends AbstractCommonService implements Consum
             logger.warn("examineConsumeStats or examineConsumerConnectionInfo exception, "
                     + consumerGroup, e);
         }
+        groupConsumeInfo.setGroup(consumerGroup);
         return groupConsumeInfo;
     }
 
     @Override
     public List<TopicConsumerInfo> queryConsumeStatsListByGroupName(String groupName, String address) {
-        ConsumeStats consumeStats;
+        List<ConsumeStats> consumeStatses = new ArrayList<>();
         String topic = null;
         try {
             String[] addresses = address.split(",");
-            String addr = addresses[0];
-            consumeStats = mqAdminExt.examineConsumeStats(addr, groupName, null, 3000);
+            for (String addr : addresses) {
+                consumeStatses.add(mqAdminExt.examineConsumeStats(addr, groupName, null, 3000));
+            }
         } catch (Exception e) {
             Throwables.throwIfUnchecked(e);
             throw new RuntimeException(e);
         }
-        return toTopicConsumerInfoList(topic, consumeStats, groupName);
+        List<TopicConsumerInfo> res = new ArrayList<>();
+        consumeStatses.forEach(consumeStats -> {
+            if (consumeStats != null && consumeStats.getOffsetTable() != null && !consumeStats.getOffsetTable().isEmpty()) {
+                res.addAll(toTopicConsumerInfoList(topic, consumeStats, groupName));
+            }
+        });
+        return res;
     }
 
     @Override
@@ -530,6 +544,7 @@ public class ConsumerServiceImpl extends AbstractCommonService implements Consum
                     GroupConsumeInfo updatedInfo = queryGroup(consumerGroup, "");
                     updatedInfo.setUpdateTime(new Date());
                     updatedInfo.setGroup(consumerGroup);
+                    updatedInfo.setAddress(consumerGroupMap.get(consumerGroup));
                     cacheConsumeInfoList.set(i, updatedInfo);
                     return updatedInfo;
                 }
@@ -541,6 +556,7 @@ public class ConsumerServiceImpl extends AbstractCommonService implements Consum
     @Override
     public List<GroupConsumeInfo> refreshAllGroup(String address) {
         cacheConsumeInfoList.clear();
+        consumerGroupMap.clear();
         return queryGroupList(false, address);
     }
 }
