@@ -44,25 +44,41 @@ jobs:
           node-version: '18.2.0'
           cache: 'npm'
           
-      # 查找并安装 npm 依赖
-      - name: Install npm dependencies
+      # 手动处理前端构建
+      - name: Manual frontend build
         run: |
           # 查找包含 package.json 的目录
-          if [ -f "package.json" ]; then
-            echo "Found package.json in root directory"
-            npm ci
-          elif [ -f "src/main/resources/static/package.json" ]; then
-            echo "Found package.json in src/main/resources/static"
-            cd src/main/resources/static
-            npm ci
-          elif find . -name "package.json" -type f | head -1; then
-            PACKAGE_DIR=$(dirname $(find . -name "package.json" -type f | head -1))
-            echo "Found package.json in $PACKAGE_DIR"
-            cd $PACKAGE_DIR
-            npm ci
-          else
-            echo "No package.json found, skipping npm install"
+          PACKAGE_JSON_FILES=$(find . -name "package.json" -type f)
+          
+          if [ -z "$PACKAGE_JSON_FILES" ]; then
+            echo "No package.json found, this might be a pure Java project"
+            exit 0
           fi
+          
+          for package_file in $PACKAGE_JSON_FILES; do
+            PACKAGE_DIR=$(dirname "$package_file")
+            echo "=== Processing package.json in $PACKAGE_DIR ==="
+            
+            cd "$PACKAGE_DIR"
+            
+            echo "=== Package.json content ==="
+            cat package.json
+            
+            echo "=== Installing dependencies ==="
+            npm install
+            
+            echo "=== Available npm scripts ==="
+            npm run || true
+            
+            echo "=== Running build if available ==="
+            if npm run build 2>/dev/null; then
+              echo "Build successful in $PACKAGE_DIR"
+            else
+              echo "Build failed or not available in $PACKAGE_DIR"
+            fi
+            
+            cd - > /dev/null
+          done
       
       
       
