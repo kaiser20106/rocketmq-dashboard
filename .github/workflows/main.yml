@@ -70,10 +70,7 @@ jobs:
       # 尝试手动运行前端构建以获取详细错误信息
       - name: Test frontend build
         working-directory: frontend-new
-        env:
-          CI: ''  
-        run: |
-          npm run build
+        run: CI='' npm run build
       
       
       # 增加详细的构建输出
