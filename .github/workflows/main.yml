@@ -45,32 +45,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: '**/package-lock.json'
       
-      # 检查前端目录和依赖
-      - name: Check frontend structure
-        run: |
-          echo "=== Checking for frontend directories ==="
-          find . -name "package.json" -type f
-          find . -name "node_modules" -type d
-          echo "=== Checking npm and node versions ==="
-          npm --version
-          node --version
       
-      # 手动安装前端依赖（如果存在）
-      - name: Install frontend dependencies
-        run: |
-          if [ -f "package.json" ]; then
-            echo "Found package.json in root, installing dependencies..."
-            npm ci
-          fi
-          for dir in $(find . -name "package.json" -not -path "./node_modules/*" -exec dirname {} \;); do
-            if [ "$dir" != "." ]; then
-              echo "Installing dependencies in $dir"
-              cd "$dir"
-              npm ci
-              cd - > /dev/null
-            fi
-          done
-        continue-on-error: true
       
       # 增加详细的构建输出
       - name: Build with Maven
